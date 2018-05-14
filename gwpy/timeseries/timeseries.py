@@ -38,6 +38,7 @@ from ..signal.fft import (registry as fft_registry, ui as fft_ui)
 from ..signal.window import (recommended_overlap, planck)
 from .core import (TimeSeriesBase, TimeSeriesBaseDict, TimeSeriesBaseList,
                    as_series_dict_class)
+from .cache import (CacheableTimeSeries, CacheableTimeSeriesDict)
 
 __author__ = 'Duncan Macleod <duncan.macleod@ligo.org>'
 
@@ -55,7 +56,7 @@ def _update_doc_with_fft_methods(func):
 
 # -- TimeSeries ---------------------------------------------------------------
 
-class TimeSeries(TimeSeriesBase):
+class TimeSeries(CacheableTimeSeries):
     """A time-domain data array.
 
     Parameters
@@ -1755,7 +1756,8 @@ class TimeSeries(TimeSeriesBase):
 
 
 @as_series_dict_class(TimeSeries)
-class TimeSeriesDict(TimeSeriesBaseDict):  # pylint: disable=missing-docstring
+# pylint: disable=missing-docstring
+class TimeSeriesDict(CacheableTimeSeriesDict):
     __doc__ = TimeSeriesBaseDict.__doc__.replace('TimeSeriesBase',
                                                  'TimeSeries')
     EntryClass = TimeSeries
