@@ -477,9 +477,13 @@ class TestDataQualityFlag(object):
         utils.assert_segmentlist_equal(flag.known, KNOWN)
         utils.assert_segmentlist_equal(flag.active, ACTIVE)
 
-    def test_round(self):
-        flag = self.create(active=ACTIVE_CONTRACTED)
-        r = flag.round()
+    @pytest.mark.parametrize('contract, active', [
+        (False, ACTIVE_CONTRACTED),
+        (True, ACTIVE_PROTRACTED),
+    ])
+    def test_round(self, contract, active):
+        flag = self.create(active=active)
+        r = flag.round(contract=contract)
         utils.assert_segmentlist_equal(r.known, KNOWN)
         utils.assert_segmentlist_equal(r.active, KNOWNACTIVE)
 
@@ -633,9 +637,9 @@ class TestDataQualityFlag(object):
                               QUERY_FLAGS[0], SegmentList([(0, 10)]))
         utils.assert_flag_equal(result, result2)
 
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             self.TEST_CLASS.query_segdb(QUERY_FLAGS[0], 1, 2, 3)
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             self.TEST_CLASS.query_segdb(QUERY_FLAGS[0], (1, 2, 3))
 
     @pytest.mark.parametrize('name, flag', [
@@ -666,9 +670,9 @@ class TestDataQualityFlag(object):
                           'X1:GWPY-TEST:0', 0, 10)
         assert str(exc.value) == 'HTTP Error 404: Not found [X1:GWPY-TEST:0]'
 
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             self.TEST_CLASS.query_dqsegdb(QUERY_FLAGS[0], 1, 2, 3)
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             self.TEST_CLASS.query_dqsegdb(QUERY_FLAGS[0], (1, 2, 3))
 
     def test_query_dqsegdb_multi(self):

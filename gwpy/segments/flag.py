@@ -84,21 +84,25 @@ def _parse_query_segments(args, func):
 
     Returns a SegmentList in all cases
     """
+    # user passed SegmentList
     if len(args) == 1 and isinstance(args[0], SegmentList):
         return args[0]
-    if len(args) == 1 and len(args[0]) == 2:
-        return SegmentList([Segment(to_gps(args[0][0]),
-                                    to_gps(args[0][1]))])
+
+    # otherwise unpack two arguments as a segment
+    if len(args) == 1:
+        args = args[0]
+
+    # if not two arguments, panic
     try:
-        return SegmentList([Segment(*map(to_gps, args))])
-    except (TypeError, RuntimeError) as exc:
-        msg = ('{0}() takes 2 arguments for start and end GPS times, '
-               'or 1 argument containing a Segment or '
-               'SegmentList'.format(func.__name__))
-        if isinstance(exc, TypeError):
-            exc.args = (msg,)
-            raise
-        raise TypeError(msg)
+        start, end = args
+    except ValueError as exc:
+        exc.args = ('{0}() takes 2 arguments for start and end GPS time, '
+                    'or 1 argument containing a Segment or SegmentList'.format(
+                        func.__name__),)
+        raise
+
+    # return list with one Segment
+    return SegmentList([Segment(to_gps(start), to_gps(end))])
 
 
 # -- DataQualityFlag ----------------------------------------------------------
@@ -345,13 +349,12 @@ class DataQualityFlag(object):
     @padding.setter
     def padding(self, pad):
         if pad is None:
-            self._padding = (0, 0)
-        else:
-            self._padding = (pad[0], pad[1])
+            pad = (None, None)
+        self._padding = tuple(float(p or 0.) for p in pad)
 
     @padding.deleter
     def padding(self):
-        self._padding = (0, 0)
+        self._padding = (0., 0.)
 
     # -- read-only properties -------------------
 
@@ -812,22 +815,36 @@ class DataQualityFlag(object):
         new.active = [(s[0]+start, s[1]+end) for s in self.active]
         return new
 
-    def round(self):
+    def round(self, contract=False):
         """Round this flag to integer segments.
+
+        Parameters
+        ----------
+        contract : `bool`, optional
+            if `False` (default) expand each segment to the containing
+            integer boundaries, otherwise contract each segment to the
+            contained boundaries
 
         Returns
         -------
         roundedflag : `DataQualityFlag`
             A copy of the original flag with the `active` and `known` segments
-            padded out to the enclosing integer boundaries.
+            padded out to integer boundaries.
         """
+        def _round(seg):
+            if contract:  # round inwards
+                a = ceil(seg[0])
+                b = floor(seg[1])
+            else:  # round outwards
+                a = floor(seg[0])
+                b = ceil(seg[1])
+            if a >= b:  # if segment is too short, return 'null' segment
+                return type(seg)(0, 0)  # will get coalesced away
+            return type(seg)(a, b)
+
         new = self.copy()
-        new.active = self._ListClass([self._EntryClass(int(floor(s[0])),
-                                                       int(ceil(s[1]))) for
-                                      s in new.active])
-        new.known = self._ListClass([self._EntryClass(int(floor(s[0])),
-                                                      int(ceil(s[1]))) for
-                                     s in new.known])
+        new.active = type(new.active)(map(_round, new.active))
+        new.known = type(new.known)(map(_round, new.known))
         return new.coalesce()
 
     def coalesce(self):
