@@ -41,13 +41,20 @@ user-facing objects.**
 from __future__ import print_function
 
 import os
+from os import makedirs
 import numbers
 from collections import namedtuple
+from glob import glob
+try:
+    from urllib.parse import (quote_plus as quote, unquote_plus as unquote)
+except ImportError:
+    from urllib import (quote_plus as quote, unquote_plus as unquote)  # py 2
 
 import numpy as np
 from numpy import nan
 from astropy.units import Quantity
 
+from ...time import (to_gps)
 from ..core import TimeSeriesBase, TimeSeriesBaseDict
 
 DEFAULT_CACHEDIR = os.path.expanduser("~/.local/share/gwpy/cache")
@@ -57,6 +64,8 @@ DEFAULT_MISSING_VALUE = nan
 # duration).
 MIN_QUERY_SECONDS = 1
 MIN_DT = 2**-16  # shortest used dt between samples; used for rounding
+TREND_TYPES = ("m-trend", "s-trend")
+_DIRNAME_SUFFIX = "-Hz"  # suffix for raw channel cache directories
 
 _DictQueryTuple = namedtuple('_DictQueryTuple', ('channels', 'start', 'end'))
 
@@ -113,26 +122,47 @@ class DictQuery(_DictQueryTuple):
         )
 
 
-# TODO increase the number of possible ways to check for sample rate, including
-# (possibly) seeing if we are currently on a dataframe-holding server that has
-# datafind available.
 def sample_rate(channel, allow_remote=False):
-    """Try to find the sample rate (in Hz) of a channel, first by checking for
-    a cached sample rate value, second by seeing if a sample rate can be
-    retrieved from other (possibly slower or remote) sources. Returns a float
-    representing the sample rate.
+    """Try to find the sample rate (in Hz) of a channel by checking available
+    local (and, optionally, potentially slow remote) sources.  Returns an
+    astropy quantity representing the sample rate.
 
     Parameters
     ----------
-
     channel : `str`, `~gwpy.detector.Channel`
         the name of the channel to read, or a `Channel` object.
 
     allow_remote : `bool`, optional, default: `False`
         whether gwpy should try to get the sample_rate for this channel from a
         remote (possibly slow) data source.
+
+    Raises
+    ------
+    IOError
+        if the channel's sample rate cannot be found.
     """
-    # TODO implement
+    # first see if this is a trend channel
+    trend = splitchan(channel)[2]
+    if trend is not None:
+        if trend == "m-trend":
+            return Quantity(1/60., "1/s")
+        if trend == "s-trend":
+            return Quantity(1., "1/s")
+        raise ValueError("Unrecognized trend type: {}".format(trend))
+    # if this is a channel object, it might have a sample_rate defined
+    if hasattr(channel, 'sample_rate') and channel.sample_rate is not None:
+        return Quantity(channel.sample_rate, "1/s")
+    # full data for the base channel name will be stored in a directory whose
+    # name is the sample rate followed by a suffix; if we have some data
+    # cached, this directory name can be parsed to get the sample rate.
+    pattern = os.path.join(basechanneldir(channel), '*' + _DIRNAME_SUFFIX)
+    dirs = [os.path.basename(d) for d in glob(pattern) if os.path.isdir(d)]
+    if len(dirs) == 1:
+        return Quantity(float(dirs[0][:len(_DIRNAME_SUFFIX)]), "1/s")
+    if allow_remote:
+        pass
+        # TODO implement some remote checks
+    raise IOError("Can't find sample rate for channel: {}".format(channel))
 
 
 def indices_to_slices(inds):
@@ -169,7 +199,7 @@ def indices_to_slices(inds):
     >>> indices_to_slices([0,1,2,3,9,10,11])
     [(0, 4), (9, 12)]
     """
-    if len(inds) == 0:
+    if len(inds) == 0:  # pylint: disable=len-as-condition
         return list()
     # cast input as a sorted ndarray and make sure indices are unique ints
     inds, counts = np.unique(inds, return_counts=True)
@@ -298,6 +328,230 @@ def squash_queries(queries, min_duration=MIN_QUERY_SECONDS):
     return squashed
 
 
+def basechanneldir(channel, cachedir=DEFAULT_CACHEDIR):
+    """Get the path to the directory containing all the cached data for this
+    base channel, stripping away trend extensions.
+
+    Parameters
+    ----------
+    channel : `~gwpy.detector.Channel`, `str`
+        the name of the cached channel.
+
+    cachedir : `str`, optional, default: `DEFAULT_CACHEDIR`
+        the directory in which to store cached timeseries data.
+
+    Returns
+    -------
+    path : `str`
+        the path to the directory for this base channel.
+
+    See Also
+    --------
+    splitchan
+        a function for parsing channels into a basename plus trend type.
+    """
+    return os.path.join(cachedir, quote(splitchan(channel)[0]))
+
+
+def channeldir(channel, cachedir=DEFAULT_CACHEDIR):
+    """Get the path to the directory containing all the cached data for this
+    specific channel (including its trend extensions).
+
+    Parameters
+    ----------
+    channel : `~gwpy.detector.Channel`, `str`
+        the name of the cached channel.
+
+    cachedir : `str`, optional, default: `DEFAULT_CACHEDIR`
+        the directory in which to store cached timeseries data.
+
+    Returns
+    -------
+    path : `str`
+        the path to the directory for this channel.
+
+    See Also
+    --------
+    splitchan
+        a function for parsing channels into a basename plus trend type.
+
+    basechanneldir
+        gets the directory containing all cached data related to this channel
+        (regardless of trend-extension); this is the parent directory of
+        `path`.
+    """
+    basename, stat, trend = splitchan(channel, cachedir=cachedir)
+    if trend:
+        return os.path.join(basechanneldir(channel), trend)
+    dirname = str(sample_rate(channel)) + _DIRNAME_SUFFIX
+    return os.path.join(basechanneldir(channel), dirname)
+
+
+def splitchan(channel):
+    """Take full channel name and parse the basename and trend type. Inverse
+    function of `joinchan`.
+
+    Parameters
+    ----------
+    channel : `~gwpy.detector.Channel`, `str`
+        the name of the cached channel.
+
+    Returns
+    -------
+    basename : `str`
+        the channel name with trend extensions stripped away. If this channel
+        is not a trend channel, this will just be the same as `channel`.
+
+    stat : `str`
+        the type of statistic being measured, e.g. `max`, `min`, etc. If this
+        is not a trend channel, `stat` will be `None`.
+
+    trend : `str`
+        `"m-trend"` for minute trends, `"s-trend"` for second trends, `None`
+        for non-trend channels.
+
+    Examples
+    --------
+    >>> splitchan('H1:SYS-TIMING_C_MA_A_PORT_9_UP.max')
+    ('H1:SYS-TIMING_C_MA_A_PORT_9_UP', 'max', 'm-trend')
+
+    >>> splitchan('H1:SYS-TIMING_C_MA_A_PORT_9_UP.min,s-trend')
+    (''H1:SYS-TIMING_C_MA_A_PORT_9_UP, 'min', 's-trend')
+
+    >>> splitchan('H1:SYS-TIMING_C_MA_A_PORT_9_UP')
+    ('H1:SYS-TIMING_C_MA_A_PORT_9_UP', None, None)
+
+    >>> ch = 'H1:SYS-TIMING_C_MA_A_PORT_2_SLAVE_CFC_TIMEDIFF_2.min,s-trend'
+    >>> joinchan(*splitchan(ch)) == ch
+    True
+
+    See Also
+    --------
+    joinchan
+        the inverse function of `splitchan`.
+    """
+    channel = str(channel)
+    if '.' not in channel:  # no '.' means no trend extension, i.e. raw channel
+        return channel, None, None
+    chan, ext = str(channel).split('.')
+    if ',' not in ext:  # no ',' in extension implicitly means "m-trend"
+        return chan, ext, "m-trend"
+    stat, trend = ext.split(',')
+    if trend not in TREND_TYPES:
+        raise ValueError("unrecognized trend type: {}".format(trend))
+    return chan, stat, trend
+
+
+def joinchan(basename, stat=None, trend="m-trend"):
+    """Get the full channel name as used by GWpy's query methods from the
+    basename as well as the statistic being measured as well as the trend type
+    (`"m-trend"`, `"s-trend"`, or `None`).
+
+    See Also
+    --------
+    splitchan
+        the inverse function of `joinchan`. See `splitchan` docstring for
+        details on the input/output of this function (parameters and return
+        values are, of course, reversed).
+    """
+    if stat is None or trend is None:
+        return basename
+    if trend == "m-trend":  # m-trend is implicit in GWpy channel names
+        return "{}.{}".format(basename, stat)
+    if trend not in TREND_TYPES:
+        raise ValueError("unrecognized trend type: {}".format(trend))
+    return "{}.{},{}".format(basename, stat, trend)
+
+
+def cachefiles(channel, start, end, cachedir=DEFAULT_CACHEDIR):
+    """Get a temporally-ordered list of cached filenames along with the times
+    they correspond to for a given channel.
+
+    Parameters
+    ----------
+    channel : `str`, `~gwpy.detector.Channel`
+        the name of the channel to read, or a `Channel` object.
+
+    start : `~gwpy.time.LIGOTimeGPS`, `float`, `str`
+        GPS start time of required data, any input parseable by
+        `~gwpy.time.to_gps` is fine
+
+    end : `~gwpy.time.LIGOTimeGPS`, `float`, `str`
+        GPS end time of required data, any input parseable by
+        `~gwpy.time.to_gps` is fine
+
+    cachedir : `str`, optional, default: `DEFAULT_CACHEDIR`
+        the directory in which to store cached timeseries data.
+
+    Returns
+    -------
+    cacheinfo : `list`
+        a list of tuples of the form `(cachepath, start, end)` where
+        `cachepath` is the absolute path to the cache file and `start` and
+        `end` are the GPS start and end times for the data held in the cache
+        file. The files are in temporal order such that they can be
+        batch-loaded and blindly appended (assuming they all exist).
+    """
+    # TODO implement
+
+
+def placeholder(seed, start, end, missing=DEFAULT_MISSING_VALUE):
+    """Create a placeholder `TimeSeriesBase` or `TimeSeriesBaseDict` (or
+    subclasses) instance between the times of `start` and `end` and fill it
+    with a placeholder value defined by `missing`.
+
+    Parameters
+    ----------
+    seed : `TimeSeriesBase`, `TimeSeriesBaseDict`
+        an input timeseries data container. We will make our placeholder match
+        the channel info contained in `seed` so that their data can readily be
+        combined.
+
+    start : `~gwpy.time.LIGOTimeGPS`, `float`, `str`
+        GPS start time of required data, any input parseable by
+        `~gwpy.time.to_gps` is fine
+
+    end : `~gwpy.time.LIGOTimeGPS`, `float`, `str`
+        GPS end time of required data, any input parseable by
+        `~gwpy.time.to_gps` is fine
+
+    missing : optional, default: `DEFAULT_MISSING_VALUE`
+        **NB: You should not manually set this unless you really know what you
+        are doing, since it affects how missing data in the cache is
+        interpreted.** This is the pad value used in cached timeseries data to
+        represent data that has not yet been cached yet.
+
+    Returns
+    -------
+    placeholder : `TimeSeriesBase`, `TimeSeriesBaseDict`
+        an instance with the same class as `seed` covering the same channels
+        between times `start` and `end` but filled with padded values defined
+        by `missing`.
+    """
+    # if this is some sort of TimeSeriesDict, make a placeholder for each
+    # component timeseries recursively and then return the full dict.
+    start = Quantity(to_gps(start).ns(), "ns")
+    end = Quantity(to_gps(end).ns(), "ns")
+    deltat = seed.dt
+    if isinstance(seed, dict):
+        result = dict()
+        for chan, timeseries in seed.items():
+            result[chan] = placeholder(timeseries, start, end, missing=missing)
+        return type(seed)(result)
+    length = int(round(((end - start) / deltat).to("").value))
+    return type(seed)(
+        np.full((length,), missing),
+        # unit=seed.unit,
+        t0=start,
+        dt=deltat,
+        # name=seed.name,
+        # channel=seed.channel,
+        # dtype=seed.dtype,
+        # copy=False
+    )
+    # TODO test
+
+
 def read(channels, start, end, cachedir=DEFAULT_CACHEDIR,
          missing=DEFAULT_MISSING_VALUE):
     """Read in as much timeseries data as possible from cache. If cached data
@@ -311,12 +565,12 @@ def read(channels, start, end, cachedir=DEFAULT_CACHEDIR,
         `gwpy.detector.Channel` object.
 
     start : `~gwpy.time.LIGOTimeGPS`, `float`, `str`
-        GPS start time of required data,
-        any input parseable by `~gwpy.time.to_gps` is fine
+        GPS start time of required data, any input parseable by
+        `~gwpy.time.to_gps` is fine
 
     end : `~gwpy.time.LIGOTimeGPS`, `float`, `str`
-        GPS end time of required data,
-        any input parseable by `~gwpy.time.to_gps` is fine
+        GPS end time of required data, any input parseable by
+        `~gwpy.time.to_gps` is fine
 
     cachedir : `str`, optional, default: `DEFAULT_CACHEDIR`
         the directory in which to store cached timeseries data.
@@ -351,6 +605,8 @@ def read(channels, start, end, cachedir=DEFAULT_CACHEDIR,
         for getting a masking array of boolean values with `True` values
         indicating missing indices.
     """
+    loaded = dict()
+    failed = list()
     # TODO implement
 
 
@@ -399,6 +655,26 @@ def cacheabledict(func):
 
 class CacheableTimeSeries(TimeSeriesBase):
     # TODO
+
+    def replace_in_place(self, other, **kwargs):
+        """Same as `replace`, but if the times found in `other` completely
+        overlap with `self`, then the values will be updated **in place** to
+        save memory and time and the updated `CacheableTimeSeries` instance
+        will be returned. **Only use this method if you understand the
+        lifecycle of this instance and know that it can be safely mutated.**
+
+        See Also
+        --------
+        CacheableTimeSeries.replace
+            does the exact same thing as this method but without ever mutating
+            the input instances.
+        """
+        if self.t0 <= other.t0 and self.times[-1] >= other.times[-1]:
+            start = np.argwhere(self.times == other.t0)[0][0]
+            end = np.argwhere(self.times == other.times[-1])[0][0]
+            self[start:end+1] = other
+            return self
+        return self.replace(self, other, **kwargs)
 
     # pylint: disable=len-as-condition
     def replace(self, other, **kwargs):
