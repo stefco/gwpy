@@ -39,6 +39,7 @@ ipython = "*"
 jupyter = "*"
 jupyterlab = "*"
 tqdm = "*"
+ligo-segments = "*"
 
 [requires]
 python_version = "3.5"
