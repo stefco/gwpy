@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) Duncan Macleod (2013)
+# Copyright (C) Duncan Macleod (2013), Stefan Countryman (2018)
 #
 # This file is part of GWpy.
 #
@@ -49,7 +49,7 @@ from astropy.io.registry import (get_reader, register_reader)
 from glue.lal import Cache
 
 from gwpy.detector import Channel
-from gwpy.time import (Time, LIGOTimeGPS)
+from gwpy.time import (Time, LIGOTimeGPS, to_gps)
 from gwpy.timeseries import (TimeSeriesBase, TimeSeriesBaseDict,
                              TimeSeriesBaseList,
                              TimeSeries, TimeSeriesDict, TimeSeriesList,
@@ -117,9 +117,50 @@ __author__ = 'Duncan Macleod <duncan.macleod@ligo.org>'
 
 # -----------------------------------------------------------------------------
 #
+# gwpy.timeseries.cache
+#
+# -----------------------------------------------------------------------------
+
+# -- TimeSeriesBase -----------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+#
 # gwpy.timeseries.core
 #
 # -----------------------------------------------------------------------------
+
+def get_psuedorandom_timeseries(cls, dt, channel, start, end, unit=None, *args,
+                                **kwargs):
+    """Get a pseudorandom timeseries of class `cls` using the hash of the
+    tuple `(dt, channel, start, end, unit)` as a seed for a PRNG. Allows for
+    reproducible data caching tests without relying on actual data fetching or
+    storage. The actual values of returned objects should be considered
+    meaningless.
+
+    Parameters
+    ----------
+    dt : float
+        the time difference between values in the returned TimeSeries.
+
+    channel : array-like
+        a list of channel understood by GWpy.
+
+    start
+        start time for the TimeSeries in a format understood by GWpy (e.g. a
+        GPS time).
+
+    end
+        the end time for the TimeSeries in a format understood by GWpy (e.g. a
+        GPS time).
+
+    unit
+        units to use for this TimeSeries.
+    """
+    length = ((to_gps(end) - to_gps(start)) / to_gps(dt)).seconds
+    rng = numpy.random.RandomState(hash(dt, channel, start, end, unit) % 2**32)
+    return cls(rng.uniform(0., 1., length), unit=None, t0=start, dt=dt,
+               channel=channel)
+
 
 # -- TimeSeriesBase -----------------------------------------------------------
 

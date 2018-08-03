@@ -63,6 +63,15 @@ LOSC_VERSION_RE = re.compile(r'V\d+')
 
 # -- utilities ----------------------------------------------------------------
 
+def _get_default_caching_behavior():
+    """Default caching behavior is dynamically determined by checking
+    environmental variable `GWPY_CACHE`; if set to `GWPY_CACHE=1`, caching is
+    on by default. Otherwise, it is off by default. This function determines
+    the default caching behavior in a uniform way across GWpy."""
+    return os.getenv('GWPY_CACHE', 'no').lower() in (
+        '1', 'true', 'yes', 'y',
+    )
+
 def _parse_formats(formats, cls=TimeSeries):
     """Parse ``formats`` into a `list`, handling `None`
     """
@@ -94,9 +103,7 @@ def _parse_formats(formats, cls=TimeSeries):
 
 def _download_file(url, cache=None, verbose=False):
     if cache is None:
-        cache = os.getenv('GWPY_CACHE', 'no').lower() in (
-            '1', 'true', 'yes', 'y',
-        )
+        cache = _get_default_caching_behavior()
     return get_readable_fileobj(url, cache=cache, show_progress=verbose)
 
 
